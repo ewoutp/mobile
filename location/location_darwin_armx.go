@@ -1,3 +1,6 @@
+// +build darwin
+// +build arm arm64
+
 package location
 
 import (
