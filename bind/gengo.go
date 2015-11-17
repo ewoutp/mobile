@@ -103,7 +103,7 @@ func (g *goGen) genWrite(valName, seqName string, T types.Type) {
 		case *types.Named:
 			obj := T.Obj()
 			if obj.Pkg() != g.pkg {
-				g.errorf("type %s not defined in package %s", T, g.pkg)
+				g.errorf("type %s not defined in %s", T, g.pkg)
 				return
 			}
 			g.Printf("%s.WriteGoRef(%s)\n", seqName, valName)
@@ -326,14 +326,14 @@ func (g *goGen) genRead(valName, seqName string, typ types.Type) {
 		case *types.Named:
 			o := u.Obj()
 			if o.Pkg() != g.pkg {
-				g.errorf("type %s not defined in package %s", u, g.pkg)
+				g.errorf("type %s not defined in %s", u, g.pkg)
 				return
 			}
 			g.Printf("// Must be a Go object\n")
 			g.Printf("%s_ref := %s.ReadRef()\n", valName, seqName)
 			g.Printf("%s := %s_ref.Get().(*%s.%s)\n", valName, valName, g.pkg.Name(), o.Name())
 		default:
-			g.errorf("unsupported type %s", t)
+			g.errorf("unsupported pointer type %s", t)
 		}
 	case *types.Named:
 		switch t.Underlying().(type) {
@@ -344,7 +344,7 @@ func (g *goGen) genRead(valName, seqName string, typ types.Type) {
 			}
 			o := t.Obj()
 			if o.Pkg() != g.pkg {
-				g.errorf("type %s not defined in package %s", t, g.pkg)
+				g.errorf("type %s not defined in %s", t, g.pkg)
 				return
 			}
 			g.Printf("var %s %s\n", valName, g.typeString(t))
@@ -356,6 +356,8 @@ func (g *goGen) genRead(valName, seqName string, typ types.Type) {
 				g.Printf("   %s = (*proxy%s)(%s_ref)\n", valName, o.Name(), valName)
 			}
 			g.Printf("}\n")
+		default:
+			g.errorf("unsupported named type %s", t)
 		}
 	default:
 		g.Printf("%s := %s.Read%s()\n", valName, seqName, seqType(t))
@@ -372,7 +374,7 @@ func (g *goGen) typeString(typ types.Type) string {
 			return types.TypeString(typ, types.RelativeTo(pkg))
 		}
 		if obj.Pkg() != g.pkg {
-			g.errorf("type %s not defined in package %s", t, g.pkg)
+			g.errorf("type %s not defined in %s", t, g.pkg)
 		}
 
 		switch t.Underlying().(type) {
