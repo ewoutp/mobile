@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 var outfile = flag.String("o", "", "result will be written file")
@@ -58,13 +59,22 @@ func gendex() error {
 	if err := os.MkdirAll(tmpdir+"/work/org/golang/app", 0775); err != nil {
 		return err
 	}
-	javaFiles, err := filepath.Glob("../../app/*.java")
-	if err != nil {
-		return err
+	javaFiles := []string{}
+	javaFilePatterns := []string{
+		"../../app/*.java",
+		"../../location/*.java",
 	}
-	if len(javaFiles) == 0 {
-		return errors.New("could not find ../../app/*.java files")
+	for _, pattern := range javaFilePatterns {
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			return errors.New(fmt.Sprintf("could not find %s files", pattern))
+		}
+		javaFiles = append(javaFiles, files...)
 	}
+	fmt.Printf("javafiles: \n%s\n", strings.Join(javaFiles, "\n"))
 	platform, err := findLast(androidHome + "/platforms")
 	if err != nil {
 		return err
