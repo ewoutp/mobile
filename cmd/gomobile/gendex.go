@@ -63,6 +63,7 @@ func gendex() error {
 	javaFilePatterns := []string{
 		"../../app/*.java",
 		"../../location/*.java",
+		"../../notification/*.java",
 		"../../toast/*.java",
 	}
 	for _, pattern := range javaFilePatterns {
