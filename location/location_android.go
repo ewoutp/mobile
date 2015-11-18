@@ -31,6 +31,8 @@ var (
 )
 
 type androidLocationManager struct {
+	channelsMutex sync.Mutex
+	channels      []chan Location
 }
 
 func locationManagerInit() {
@@ -70,9 +72,42 @@ func stopLocationUpdates() {
 }
 
 func (lm *androidLocationManager) RequestUpdates(updates chan Location, cancel <-chan struct{}) {
+	lm.addListener(updates)
+	go func() {
+		select {
+		case <-cancel:
+			lm.removeListener(updates)
+		}
+	}()
+
 	minTime := int64(1000)      // minimum time interval between location updates, in milliseconds
 	minDistance := float32(1.0) // minimum distance between location updates, in meters
 	requestLocationUpdates("gps", minTime, minDistance)
+}
+
+func (lm *androidLocationManager) addListener(updates chan Location) {
+	lm.channelsMutex.Lock()
+	defer lm.channelsMutex.Unlock()
+	lm.channels = append(lm.channels, updates)
+}
+
+func (lm *androidLocationManager) removeListener(updates chan Location) {
+	lm.channelsMutex.Lock()
+	defer lm.channelsMutex.Unlock()
+	for i, c := range lm.channels {
+		if c == updates {
+			lm.channels = append(lm.channels[:i], lm.channels[i+1:]...)
+			return
+		}
+	}
+}
+
+func (lm *androidLocationManager) send(update Location) {
+	lm.channelsMutex.Lock()
+	defer lm.channelsMutex.Unlock()
+	for _, c := range lm.channels {
+		c <- update
+	}
 }
 
 func getLocationManager() LocationManager {
@@ -83,6 +118,14 @@ func getLocationManager() LocationManager {
 //export onLocationChanged
 func onLocationChanged(data *C.locationData) {
 	log.Print("onLocationChanged %#v", data)
+	if locationManager != nil {
+		l := Location{
+			Latitude:  float64(data.latitude),
+			Longitude: float64(data.longitude),
+			Speed:     float32(data.speed),
+		}
+		locationManager.send(l)
+	}
 }
 
 //export onProviderDisabled
