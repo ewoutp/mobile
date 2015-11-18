@@ -11,6 +11,7 @@
 
 jobject location_manager;
 jobject locationListener;
+jobject locationHandlerThread;
 
 jclass contextClass; // Context().getClass()
 jclass classClass; // java/lang/Class.class
@@ -23,9 +24,11 @@ jmethodID getLongitudeID; //android/location/Location.getLongitude()
 jmethodID getSpeedID; //android/location/Location.getSpeed()
 jclass locationManagerClass; // android/location/LocationManager.class
 jclass looperClass; // android/os/Looper.class
+jclass handlerThreadClass; // android/os/HandlerThread
+jmethodID handlerThreadCtor; // android/os/HandlerThread.ctor(String)
+jmethodID handlerThreadGetLooper; // android/os/HandlerThread.getLooper()
 jmethodID requestLocationUpdatesID; // android/location/LocationManager.requestLocationUpdates
 jmethodID removeUpdatesID; // android/location/LocationManager.removeUpdates
-jmethodID getMainLooperID; // android/os/Looper.getMainLooper
 
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, "Go", __VA_ARGS__)
 #define LOG_FATAL(...) __android_log_print(ANDROID_LOG_FATAL, "Go", __VA_ARGS__)
@@ -90,9 +93,17 @@ void location_manager_init(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) 
 	getSpeedID = find_method(env, locationClass, "getSpeed", "()F");
 	locationManagerClass = global_ref(env, find_class(env, "android/location/LocationManager"));
 	looperClass = global_ref(env, find_class(env, "android/os/Looper"));
+	handlerThreadClass = global_ref(env, find_class(env, "android/os/HandlerThread"));
+	handlerThreadCtor = find_method(env, handlerThreadClass, "<init>", "(Ljava/lang/String;)V");
+	handlerThreadGetLooper = find_method(env, handlerThreadClass, "getLooper", "()Landroid/os/Looper;");
 	requestLocationUpdatesID = find_method(env, locationManagerClass, "requestLocationUpdates", "(Ljava/lang/String;JFLandroid/location/LocationListener;Landroid/os/Looper;)V");
 	removeUpdatesID = find_method(env, locationManagerClass, "removeUpdates", "(Landroid/location/LocationListener;)V");
-	getMainLooperID = find_static_method(env, looperClass, "getMainLooper", "()Landroid/os/Looper;");
+
+	// Create location handler thread
+	jstring threadName = (*env)->NewStringUTF(env, "go-location");
+	locationHandlerThread = global_ref(env, (*env)->NewObject(env, handlerThreadClass, handlerThreadCtor, threadName));
+	jmethodID startID = find_method(env, handlerThreadClass, "start", "()V");
+	(*env)->CallVoidMethod(env, locationHandlerThread, startID);
 }
 
 void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) {
@@ -111,11 +122,12 @@ void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_en
 	jmethodID ctorID = find_method(env, cls, "<init>", "()V");
 	locationListener = global_ref(env, (*env)->NewObject(env, cls, ctorID));
 
+	jobject looper = (*env)->CallObjectMethod(env, locationHandlerThread, handlerThreadGetLooper);
+
 	jstring providerStr = (*env)->NewStringUTF(env, "gps");
 	jlong minTime = 0;
 	float minDistance = 0.0f;
-	jobject mainLooper = (*env)->CallStaticObjectMethod(env, looperClass, getMainLooperID);
-	 (*env)->CallVoidMethod(env, location_manager, requestLocationUpdatesID, providerStr, minTime, minDistance, locationListener, mainLooper);
+	 (*env)->CallVoidMethod(env, location_manager, requestLocationUpdatesID, providerStr, minTime, minDistance, locationListener, looper);
 }
 
 void location_manager_stopLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) {
