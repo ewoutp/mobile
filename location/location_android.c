@@ -8,16 +8,12 @@
 #include <stdint.h>
 #include <string.h>
 #include "_cgo_export.h"
+#include "../internal/mobileinit/helper_android.h"
 
 jobject location_manager;
 jobject locationListener;
 jobject locationHandlerThread;
 
-jclass contextClass; // Context().getClass()
-jclass classClass; // java/lang/Class.class
-jclass classLoaderClass; // java/lang/ClassLoader.class
-jmethodID getClassLoaderID; // java/lang/Class.getClassLoader
-jmethodID loadClassID; // java/lang/ClassLoader.loadClass
 jclass locationClass; // android/location/Location.class
 jmethodID getLatitudeID; //android/location/Location.getLatitude()
 jmethodID getLongitudeID; //android/location/Location.getLongitude()
@@ -29,43 +25,6 @@ jmethodID handlerThreadCtor; // android/os/HandlerThread.ctor(String)
 jmethodID handlerThreadGetLooper; // android/os/HandlerThread.getLooper()
 jmethodID requestLocationUpdatesID; // android/location/LocationManager.requestLocationUpdates
 jmethodID removeUpdatesID; // android/location/LocationManager.removeUpdates
-
-#define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, "Go", __VA_ARGS__)
-#define LOG_FATAL(...) __android_log_print(ANDROID_LOG_FATAL, "Go", __VA_ARGS__)
-
-static jclass find_class(JNIEnv *env, const char *class_name) {
-	jclass clazz = (*env)->FindClass(env, class_name);
-	if (clazz == NULL) {
-		(*env)->ExceptionClear(env);
-		LOG_FATAL("cannot find %s", class_name);
-		return NULL;
-	}
-	return clazz;
-}
-
-static jmethodID find_method(JNIEnv *env, jclass clazz, const char *name, const char *sig) {
-	jmethodID m = (*env)->GetMethodID(env, clazz, name, sig);
-	if (m == 0) {
-		(*env)->ExceptionClear(env);
-		LOG_FATAL("cannot find method %s %s", name, sig);
-		return 0;
-	}
-	return m;
-}
-
-static jmethodID find_static_method(JNIEnv *env, jclass clazz, const char *name, const char *sig) {
-	jmethodID m = (*env)->GetStaticMethodID(env, clazz, name, sig);
-	if (m == 0) {
-		(*env)->ExceptionClear(env);
-		LOG_FATAL("cannot find static method %s %s", name, sig);
-		return 0;
-	}
-	return m;
-}
-
-static jobject global_ref(JNIEnv *env, jobject obj) {
-	return (*env)->NewGlobalRef(env, obj);
-}
 
 void location_manager_init(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) {
 	JavaVM* vm = (JavaVM*)java_vm;
@@ -80,13 +39,6 @@ void location_manager_init(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) 
 	location_manager = (*env)->NewGlobalRef(env, lm);
 
 	// Preload other classes
-	jobject ctxObj = (jobject)ctx;
-	contextClass = global_ref(env, (*env)->GetObjectClass(env, ctxObj));
-	classClass = global_ref(env, find_class(env, "java/lang/Class"));
-	classLoaderClass = global_ref(env, find_class(env, "java/lang/ClassLoader"));
-	getClassLoaderID = find_method(env, classClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
-	loadClassID = find_method(env, classLoaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-
 	locationClass = global_ref(env, find_class(env, "android/location/Location"));
 	getLatitudeID = find_method(env, locationClass, "getLatitude", "()D");
 	getLongitudeID = find_method(env, locationClass, "getLongitude", "()D");
@@ -106,7 +58,7 @@ void location_manager_init(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) 
 	(*env)->CallVoidMethod(env, locationHandlerThread, startID);
 }
 
-void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx) {
+void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx, const char *provider, jlong minTime, jfloat minDistance) {
 	if (locationListener) {
 		// Already initialized
 		return;
@@ -115,18 +67,13 @@ void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_en
 	JNIEnv* env = (JNIEnv*)jni_env;
 	jobject ctxObj = (jobject)ctx;
 
-	jobject cl = (*env)->CallObjectMethod(env, contextClass, getClassLoaderID);
-	jstring className = (*env)->NewStringUTF(env, "location/NativeLocationListener");
-	jclass cls = (*env)->CallObjectMethod(env, cl, loadClassID, className);
-
+	jclass cls = find_local_class(env, ctxObj, "location/NativeLocationListener");
 	jmethodID ctorID = find_method(env, cls, "<init>", "()V");
 	locationListener = global_ref(env, (*env)->NewObject(env, cls, ctorID));
 
 	jobject looper = (*env)->CallObjectMethod(env, locationHandlerThread, handlerThreadGetLooper);
 
-	jstring providerStr = (*env)->NewStringUTF(env, "gps");
-	jlong minTime = 0;
-	float minDistance = 0.0f;
+	jstring providerStr = (*env)->NewStringUTF(env, provider);
 	 (*env)->CallVoidMethod(env, location_manager, requestLocationUpdatesID, providerStr, minTime, minDistance, locationListener, looper);
 }
 
@@ -151,7 +98,7 @@ JNIEXPORT void JNICALL Java_location_NativeLocationListener_onLocationChanged(JN
 	locationData data;
 	data.latitude = (*env)->CallDoubleMethod(env, location, getLatitudeID);
 	data.longitude = (*env)->CallDoubleMethod(env, location, getLongitudeID);
-	data.speed = (*env)->CallDoubleMethod(env, location, getSpeedID);
+	data.speed = (*env)->CallFloatMethod(env, location, getSpeedID);
 	onLocationChanged(&data);
 }
 

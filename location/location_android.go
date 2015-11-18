@@ -6,7 +6,7 @@ package location
 #include <stdlib.h>
 
 void location_manager_init(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx);
-void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx);
+void location_manager_requestLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx, const char *provider, jlong minTime, jfloat minDistance);
 void location_manager_stopLocationUpdates(uintptr_t java_vm, uintptr_t jni_env, uintptr_t ctx);
 
 typedef struct {
@@ -20,6 +20,7 @@ import "C"
 import (
 	"log"
 	"sync"
+	"unsafe"
 
 	"golang.org/x/mobile/internal/mobileinit"
 )
@@ -44,9 +45,11 @@ func locationManagerInit() {
 	log.Print("location initialized")
 }
 
-func requestLocationUpdates() {
+func requestLocationUpdates(provider string, minTime int64, minDistance float32) {
 	err := mobileinit.RunOnJVM(func(vm, env, ctx uintptr) error {
-		C.location_manager_requestLocationUpdates(C.uintptr_t(vm), C.uintptr_t(env), C.uintptr_t(ctx))
+		cProvider := C.CString(provider)
+		defer C.free(unsafe.Pointer(cProvider))
+		C.location_manager_requestLocationUpdates(C.uintptr_t(vm), C.uintptr_t(env), C.uintptr_t(ctx), cProvider, C.jlong(minTime), C.jfloat(minDistance))
 		return nil
 	})
 	if err != nil {
@@ -67,7 +70,9 @@ func stopLocationUpdates() {
 }
 
 func (lm *androidLocationManager) RequestUpdates(updates chan Location, cancel <-chan struct{}) {
-	requestLocationUpdates()
+	minTime := int64(1000)      // minimum time interval between location updates, in milliseconds
+	minDistance := float32(1.0) // minimum distance between location updates, in meters
+	requestLocationUpdates("gps", minTime, minDistance)
 }
 
 func getLocationManager() LocationManager {
