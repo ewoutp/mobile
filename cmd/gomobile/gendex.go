@@ -31,7 +31,7 @@ import (
 	"strings"
 )
 
-var outfile = flag.String("o", "", "result will be written file")
+var outfile = flag.String("o", "dex.go", "result will be written file")
 
 var tmpdir string
 
@@ -63,6 +63,7 @@ func gendex() error {
 	javaFilePatterns := []string{
 		"../../app/*.java",
 		"../../location/*.java",
+		"../../toast/*.java",
 	}
 	for _, pattern := range javaFilePatterns {
 		files, err := filepath.Glob(pattern)
@@ -147,6 +148,7 @@ func gendex() error {
 func findLast(path string) (string, error) {
 	dir, err := os.Open(path)
 	if err != nil {
+		fmt.Printf("open(%s) failed\n", path)
 		return "", err
 	}
 	children, err := dir.Readdirnames(-1)
