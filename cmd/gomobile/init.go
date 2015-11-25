@@ -76,11 +76,6 @@ func init() {
 }
 
 func runInit(cmd *command) error {
-	version, err := goVersion()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, version)
-	}
-
 	gopaths := filepath.SplitList(goEnv("GOPATH"))
 	if len(gopaths) == 0 {
 		return fmt.Errorf("GOPATH is not set")
@@ -145,7 +140,13 @@ func runInit(cmd *command) error {
 
 	// Install standard libraries for cross compilers.
 	start := time.Now()
-	if err := installStd(androidArmEnv, "-buildmode=c-shared"); err != nil {
+	var androidArgs []string
+	if goVersion == go1_6 {
+		// Ideally this would be -buildmode=c-shared.
+		// https://golang.org/issue/13234.
+		androidArgs = []string{"-gcflags=-shared", "-ldflags=-shared"}
+	}
+	if err := installStd(androidArmEnv, androidArgs...); err != nil {
 		return err
 	}
 	if err := installDarwin(); err != nil {
@@ -156,7 +157,7 @@ func runInit(cmd *command) error {
 		printcmd("go version > %s", verpath)
 	}
 	if !buildN {
-		if err := ioutil.WriteFile(verpath, version, 0644); err != nil {
+		if err := ioutil.WriteFile(verpath, goVersionOut, 0644); err != nil {
 			return err
 		}
 	}
@@ -294,23 +295,6 @@ func rm(name string) error {
 		return nil
 	}
 	return os.Remove(name)
-}
-
-func goVersion() ([]byte, error) {
-	gobin, err := exec.LookPath("go")
-	if err != nil {
-		return nil, fmt.Errorf(`no Go tool on $PATH`)
-	}
-	buildHelp, err := exec.Command(gobin, "help", "build").CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("bad Go tool: %v (%s)", err, buildHelp)
-	}
-	// TODO(crawshaw): this is a crude test for Go 1.5. After release,
-	// remove this and check it is not an old release version.
-	if !bytes.Contains(buildHelp, []byte("-pkgdir")) {
-		return nil, fmt.Errorf("installed Go tool does not support -pkgdir")
-	}
-	return exec.Command(gobin, "version").CombinedOutput()
 }
 
 func fetchOpenAL() error {

@@ -5,22 +5,20 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
-	"go/parser"
-	"go/scanner"
+	"go/importer"
 	"go/token"
 	"go/types"
 	"io"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/mobile/bind"
-	"golang.org/x/mobile/internal/loader"
 )
 
 // ctx, pkg, tmpdir in build.go
@@ -89,15 +87,13 @@ func runBind(cmd *command) error {
 		return fmt.Errorf("-prefix is supported only for ios target")
 	}
 
-	var pkg *build.Package
+	var pkgs []*build.Package
 	switch len(args) {
 	case 0:
-		pkg, err = ctx.ImportDir(cwd, build.ImportComment)
-	case 1:
-		pkg, err = ctx.Import(args[0], cwd, build.ImportComment)
+		pkgs = make([]*build.Package, 1)
+		pkgs[0], err = ctx.ImportDir(cwd, build.ImportComment)
 	default:
-		cmd.usage()
-		os.Exit(1)
+		pkgs, err = importPackages(args)
 	}
 	if err != nil {
 		return err
@@ -105,12 +101,26 @@ func runBind(cmd *command) error {
 
 	switch buildTarget {
 	case "android":
-		return goAndroidBind(pkg)
+		return goAndroidBind(pkgs)
 	case "ios":
-		return goIOSBind(pkg)
+		if len(pkgs) > 1 {
+			return fmt.Errorf("binding multiple packages not supported for ios")
+		}
+		return goIOSBind(pkgs)
 	default:
 		return fmt.Errorf(`unknown -target, %q.`, buildTarget)
 	}
+}
+
+func importPackages(args []string) ([]*build.Package, error) {
+	pkgs := make([]*build.Package, len(args))
+	for i, path := range args {
+		var err error
+		if pkgs[i], err = ctx.Import(path, cwd, build.ImportComment); err != nil {
+			return nil, fmt.Errorf("package %q: %v", path, err)
+		}
+	}
+	return pkgs, nil
 }
 
 var (
@@ -129,7 +139,7 @@ func init() {
 type binder struct {
 	files []*ast.File
 	fset  *token.FileSet
-	pkg   *types.Package
+	pkgs  []*types.Package
 }
 
 func (b *binder) GenObjc(outdir string) error {
@@ -137,7 +147,7 @@ func (b *binder) GenObjc(outdir string) error {
 	if bindPrefix == "" {
 		bindPrefix = bindPrefixDefault
 	}
-	name := strings.Title(b.pkg.Name())
+	name := strings.Title(b.pkgs[0].Name())
 	bindOption := "-lang=objc"
 	if bindPrefix != bindPrefixDefault {
 		bindOption += " -prefix=" + bindPrefix
@@ -148,15 +158,21 @@ func (b *binder) GenObjc(outdir string) error {
 
 	generate := func(w io.Writer) error {
 		if buildX {
-			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, b.pkg.Path())
+			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, b.pkgs[0].Path())
 		}
-		return bind.GenObjc(w, b.fset, b.pkg, bindPrefix, false)
+		if buildN {
+			return nil
+		}
+		return bind.GenObjc(w, b.fset, b.pkgs[0], bindPrefix, false)
 	}
 	if err := writeFile(mfile, generate); err != nil {
 		return err
 	}
 	generate = func(w io.Writer) error {
-		return bind.GenObjc(w, b.fset, b.pkg, bindPrefix, true)
+		if buildN {
+			return nil
+		}
+		return bind.GenObjc(w, b.fset, b.pkgs[0], bindPrefix, true)
 	}
 	if err := writeFile(hfile, generate); err != nil {
 		return err
@@ -169,8 +185,8 @@ func (b *binder) GenObjc(outdir string) error {
 	return copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(objcPkg.Dir, "seq.h"))
 }
 
-func (b *binder) GenJava(outdir string) error {
-	className := strings.Title(b.pkg.Name())
+func (b *binder) GenJava(pkg *types.Package, outdir string) error {
+	className := strings.Title(pkg.Name())
 	javaFile := filepath.Join(outdir, className+".java")
 	bindOption := "-lang=java"
 	if bindJavaPkg != "" {
@@ -179,9 +195,12 @@ func (b *binder) GenJava(outdir string) error {
 
 	generate := func(w io.Writer) error {
 		if buildX {
-			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, b.pkg.Path())
+			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, pkg.Path())
 		}
-		return bind.GenJava(w, b.fset, b.pkg, bindJavaPkg)
+		if buildN {
+			return nil
+		}
+		return bind.GenJava(w, b.fset, pkg, bindJavaPkg)
 	}
 	if err := writeFile(javaFile, generate); err != nil {
 		return err
@@ -189,16 +208,19 @@ func (b *binder) GenJava(outdir string) error {
 	return nil
 }
 
-func (b *binder) GenGo(outdir string) error {
-	pkgName := "go_" + b.pkg.Name()
+func (b *binder) GenGo(pkg *types.Package, outdir string) error {
+	pkgName := "go_" + pkg.Name()
 	outdir = filepath.Join(outdir, pkgName)
 	goFile := filepath.Join(outdir, pkgName+"main.go")
 
 	generate := func(w io.Writer) error {
 		if buildX {
-			printcmd("gobind -lang=go -outdir=%s %s", outdir, b.pkg.Path())
+			printcmd("gobind -lang=go -outdir=%s %s", outdir, pkg.Path())
 		}
-		return bind.GenGo(w, b.fset, b.pkg)
+		if buildN {
+			return nil
+		}
+		return bind.GenGo(w, b.fset, pkg)
 	}
 	if err := writeFile(goFile, generate); err != nil {
 		return err
@@ -254,59 +276,64 @@ func writeFile(filename string, generate func(io.Writer) error) error {
 	return generate(f)
 }
 
-func newBinder(bindPkg *build.Package) (*binder, error) {
-	if bindPkg.Name == "main" {
-		return nil, fmt.Errorf("package %q: can only bind a library package", bindPkg.Name)
+func loadExportData(pkgs []*build.Package, env []string, args ...string) ([]*types.Package, error) {
+	// Compile the package. This will produce good errors if the package
+	// doesn't typecheck for some reason, and is a necessary step to
+	// building the final output anyway.
+	paths := make([]string, len(pkgs))
+	for i, p := range pkgs {
+		paths[i] = p.ImportPath
 	}
-
-	fset := token.NewFileSet()
-
-	hasErr := false
-	var files []*ast.File
-	for _, filename := range bindPkg.GoFiles {
-		p := filepath.Join(bindPkg.Dir, filename)
-		file, err := parser.ParseFile(fset, p, nil, parser.AllErrors)
-		if err != nil {
-			hasErr = true
-			if list, _ := err.(scanner.ErrorList); len(list) > 0 {
-				for _, err := range list {
-					fmt.Fprintln(os.Stderr, err)
-				}
-			} else {
-				fmt.Fprintln(os.Stderr, err)
-			}
-		}
-		files = append(files, file)
-	}
-
-	if hasErr {
-		return nil, errors.New("package parsing failed.")
-	}
-
-	conf := loader.Config{
-		Fset:        fset,
-		AllowErrors: true,
-	}
-	conf.TypeChecker.IgnoreFuncBodies = true
-	conf.TypeChecker.FakeImportC = true
-	conf.TypeChecker.DisableUnusedImportCheck = true
-	var tcErrs []error
-	conf.TypeChecker.Error = func(err error) {
-		tcErrs = append(tcErrs, err)
-	}
-
-	conf.CreateFromFiles(bindPkg.ImportPath, files...)
-	program, err := conf.Load()
-	if err != nil {
-		for _, err := range tcErrs {
-			fmt.Fprintln(os.Stderr, err)
-		}
+	if err := goInstall(paths, env, args...); err != nil {
 		return nil, err
 	}
+
+	// Assemble a fake GOPATH and trick go/importer into using it.
+	// Ideally the importer package would let us provide this to
+	// it somehow, but this works with what's in Go 1.5 today and
+	// gives us access to the gcimporter package without us having
+	// to make a copy of it.
+	fakegopath := filepath.Join(tmpdir, "fakegopath")
+	if err := removeAll(fakegopath); err != nil {
+		return nil, err
+	}
+	if err := mkdir(filepath.Join(fakegopath, "pkg")); err != nil {
+		return nil, err
+	}
+	typePkgs := make([]*types.Package, len(pkgs))
+	for i, p := range pkgs {
+		importPath := p.ImportPath
+		src := filepath.Join(pkgdir(env), importPath+".a")
+		dst := filepath.Join(fakegopath, "pkg/"+getenv(env, "GOOS")+"_"+getenv(env, "GOARCH")+"/"+importPath+".a")
+		if err := copyFile(dst, src); err != nil {
+			return nil, err
+		}
+		if buildN {
+			typePkgs[i] = types.NewPackage(importPath, path.Base(importPath))
+			continue
+		}
+		oldDefault := build.Default
+		build.Default = ctx // copy
+		build.Default.GOPATH = fakegopath
+		p, err := importer.Default().Import(importPath)
+		build.Default = oldDefault
+		if err != nil {
+			return nil, err
+		}
+		typePkgs[i] = p
+	}
+	return typePkgs, nil
+}
+
+func newBinder(pkgs []*types.Package) (*binder, error) {
+	for _, pkg := range pkgs {
+		if pkg.Name() == "main" {
+			return nil, fmt.Errorf("package %q (%q): can only bind a library package", pkg.Name(), pkg.Path())
+		}
+	}
 	b := &binder{
-		files: files,
-		fset:  fset,
-		pkg:   program.Created[0].Pkg,
+		fset: token.NewFileSet(),
+		pkgs: pkgs,
 	}
 	return b, nil
 }
