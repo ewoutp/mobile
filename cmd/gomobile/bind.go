@@ -56,7 +56,7 @@ are prefixed with 'Go' unless the -prefix flag is provided.
 
 The -v flag provides verbose output, including the list of packages built.
 
-The build flags -a, -i, -n, -x, -gcflags, -ldflags, -tags, and -work
+The build flags -a, -n, -x, -gcflags, -ldflags, -tags, and -work
 are shared with the build command. For documentation, see 'go help build'.
 `,
 }
@@ -70,15 +70,13 @@ func runBind(cmd *command) error {
 
 	args := cmd.flag.Args()
 
-	ctx.GOARCH = "arm"
-	switch buildTarget {
-	case "android":
-		ctx.GOOS = "android"
-	case "ios":
-		ctx.GOOS = "darwin"
-	default:
-		return fmt.Errorf(`unknown -target, %q.`, buildTarget)
+	targetOS, targetArchs, err := parseBuildTarget(buildTarget)
+	if err != nil {
+		return fmt.Errorf(`invalid -target=%q: %v`, buildTarget, err)
 	}
+
+	ctx.GOARCH = "arm"
+	ctx.GOOS = targetOS
 
 	if bindJavaPkg != "" && ctx.GOOS != "android" {
 		return fmt.Errorf("-javapkg is supported only for android target")
@@ -99,16 +97,14 @@ func runBind(cmd *command) error {
 		return err
 	}
 
-	switch buildTarget {
+	switch targetOS {
 	case "android":
-		return goAndroidBind(pkgs)
-	case "ios":
-		if len(pkgs) > 1 {
-			return fmt.Errorf("binding multiple packages not supported for ios")
-		}
+		return goAndroidBind(pkgs, targetArchs)
+	case "darwin":
+		// TODO: use targetArchs?
 		return goIOSBind(pkgs)
 	default:
-		return fmt.Errorf(`unknown -target, %q.`, buildTarget)
+		return fmt.Errorf(`invalid -target=%q`, buildTarget)
 	}
 }
 
@@ -142,47 +138,51 @@ type binder struct {
 	pkgs  []*types.Package
 }
 
-func (b *binder) GenObjc(outdir string) error {
+func (b *binder) GenObjc(pkg *types.Package, outdir string) (string, error) {
 	const bindPrefixDefault = "Go"
 	if bindPrefix == "" {
 		bindPrefix = bindPrefixDefault
 	}
-	name := strings.Title(b.pkgs[0].Name())
+	name := strings.Title(pkg.Name())
 	bindOption := "-lang=objc"
 	if bindPrefix != bindPrefixDefault {
 		bindOption += " -prefix=" + bindPrefix
 	}
 
-	mfile := filepath.Join(outdir, bindPrefix+name+".m")
-	hfile := filepath.Join(outdir, bindPrefix+name+".h")
+	fileBase := bindPrefix + name
+	mfile := filepath.Join(outdir, fileBase+".m")
+	hfile := filepath.Join(outdir, fileBase+".h")
 
 	generate := func(w io.Writer) error {
 		if buildX {
-			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, b.pkgs[0].Path())
+			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, pkg.Path())
 		}
 		if buildN {
 			return nil
 		}
-		return bind.GenObjc(w, b.fset, b.pkgs[0], bindPrefix, false)
+		return bind.GenObjc(w, b.fset, pkg, bindPrefix, false)
 	}
 	if err := writeFile(mfile, generate); err != nil {
-		return err
+		return "", err
 	}
 	generate = func(w io.Writer) error {
 		if buildN {
 			return nil
 		}
-		return bind.GenObjc(w, b.fset, b.pkgs[0], bindPrefix, true)
+		return bind.GenObjc(w, b.fset, pkg, bindPrefix, true)
 	}
 	if err := writeFile(hfile, generate); err != nil {
-		return err
+		return "", err
 	}
 
 	objcPkg, err := ctx.Import("golang.org/x/mobile/bind/objc", "", build.FindOnly)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(objcPkg.Dir, "seq.h"))
+	if err := copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(objcPkg.Dir, "seq.h")); err != nil {
+		return "", err
+	}
+	return fileBase, nil
 }
 
 func (b *binder) GenJava(pkg *types.Package, outdir string) error {
@@ -288,6 +288,8 @@ func loadExportData(pkgs []*build.Package, env []string, args ...string) ([]*typ
 		return nil, err
 	}
 
+	goos, goarch := getenv(env, "GOOS"), getenv(env, "GOARCH")
+
 	// Assemble a fake GOPATH and trick go/importer into using it.
 	// Ideally the importer package would let us provide this to
 	// it somehow, but this works with what's in Go 1.5 today and
@@ -304,7 +306,7 @@ func loadExportData(pkgs []*build.Package, env []string, args ...string) ([]*typ
 	for i, p := range pkgs {
 		importPath := p.ImportPath
 		src := filepath.Join(pkgdir(env), importPath+".a")
-		dst := filepath.Join(fakegopath, "pkg/"+getenv(env, "GOOS")+"_"+getenv(env, "GOARCH")+"/"+importPath+".a")
+		dst := filepath.Join(fakegopath, "pkg/"+goos+"_"+goarch+"/"+importPath+".a")
 		if err := copyFile(dst, src); err != nil {
 			return nil, err
 		}
@@ -314,6 +316,7 @@ func loadExportData(pkgs []*build.Package, env []string, args ...string) ([]*typ
 		}
 		oldDefault := build.Default
 		build.Default = ctx // copy
+		build.Default.GOARCH = goarch
 		build.Default.GOPATH = fakegopath
 		p, err := importer.Default().Import(importPath)
 		build.Default = oldDefault

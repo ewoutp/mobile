@@ -81,6 +81,13 @@ public class SeqTest extends AndroidTestCase {
     String want = "a short string";
     String got = Testpkg.StrDup(want);
     assertEquals("Strings should match", want, got);
+
+    want = "";
+    got = Testpkg.StrDup(want);
+    assertEquals("Strings should match (empty string)", want, got);
+
+    got = Testpkg.StrDup(null);
+    assertEquals("Strings should match (null string)", want, got);
   }
 
   public void testLongString() {
@@ -307,6 +314,42 @@ public class SeqTest extends AndroidTestCase {
     obj = null;
     runGC();
     assertFalse("want obj to be kept live by Go", finalizedAnI);
+  }
+
+  private int countI = 0;
+
+  private class CountI extends Testpkg.I.Stub {
+    public void F() { countI++; }
+
+    public void E() throws Exception {}
+    public Testpkg.I I() { return null; }
+    public Testpkg.S S() { return null; }
+    public String StoString(Testpkg.S s) { return ""; }
+    public long V() { return 0; }
+    public long VE() throws Exception { return 0; }
+    public String String() { return ""; }
+  }
+
+  public void testGoRefMapGrow() {
+    CountI obj = new CountI();
+    Testpkg.Keep(obj);
+
+    // Push active references beyond base map size.
+    for (int i = 0; i < 24; i++) {
+      CountI o = new CountI();
+      Testpkg.CallF(o);
+      if (i%3==0) {
+        Testpkg.Keep(o);
+      }
+    }
+    runGC();
+    for (int i = 0; i < 128; i++) {
+      Testpkg.CallF(new CountI());
+    }
+
+    Testpkg.CallF(obj); // original object needs to work.
+
+    assertEquals(countI, 1+24+128);
   }
 
   private void runGC() {
